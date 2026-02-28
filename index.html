@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+    <!-- Play.fun SDK Meta Tag - REPLACE 'your-api-key' WITH YOUR REAL API KEY -->
+    <meta name="x-ogp-key" content="your-api-key" />
+    <title>Retro Flappy Bird - Ultra Fast 900</title>
+    <!-- Play.fun SDK Script -->
+    <script src="https://sdk.play.fun"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #222;
+            overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+            background-color: #70c5ce;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            image-rendering: pixelated;
+        }
+        #ui {
+            position: absolute;
+            color: white;
+            text-shadow: 2px 2px #000;
+            pointer-events: none;
+            text-align: center;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .score-container {
+            margin-top: 20px;
+        }
+        .score { font-size: 48px; }
+        .best-score { font-size: 18px; opacity: 0.8; }
+        .message { 
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 24px;
+            width: 100%;
+            white-space: pre-wrap;
+        }
+        #highscoreTable {
+            margin-top: 20px;
+            font-size: 16px;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div class="score-container">
+            <div id="scoreLabel" class="score">0</div>
+            <div id="bestLabel" class="best-score">BEST: 0</div>
+        </div>
+        <div id="messageLabel" class="message">LOADING...</div>
+        <div id="highscoreTable">
+            <div>--- TOP 5 ---</div>
+            <div id="highscoreList"></div>
+        </div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // SDK Initialization
+        let sdk;
+        let sdkReady = false;
+
+        try {
+            sdk = new OpenGameSDK({ ui: { usePointsWidget: true } });
+            sdk.init({ gameId: '00000000-0000-0000-0000-000000000000' }) 
+                .then(() => {
+                    sdkReady = true;
+                    finalizeLoading();
+                })
+                .catch(err => {
+                    sdkReady = false;
+                    finalizeLoading();
+                });
+        } catch (e) {
+            finalizeLoading();
+        }
+
+        function finalizeLoading() {
+            if (gameState === 'LOADING') {
+                gameState = 'START';
+                messageLabel.innerText = 'PRESS SPACE OR TAP TO START';
+            }
+        }
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreLabel = document.getElementById('scoreLabel');
+        const bestLabel = document.getElementById('bestLabel');
+        const messageLabel = document.getElementById('messageLabel');
+        const highscoreTable = document.getElementById('highscoreTable');
+        const highscoreList = document.getElementById('highscoreList');
+
+        /** * Game Constants 
+         * Đã tăng GRAVITY lên 900 và điều chỉnh FLAP_SPEED tương ứng
+         */
+        const GRAVITY = 900;         // Tốc độ chim rơi cực nhanh theo yêu cầu
+        const FLAP_SPEED = -310;     // Tăng lực nhảy để chim có thể bật lên kịp thời
+        const PIPE_SPEED = 300;      
+        const PIPE_SPAWN_INTERVAL = 0.9; 
+        const PIPE_GAP = 190;        
+        const BIRD_X = 50;
+
+        // Game State
+        let bird, pipes, clouds, score, gameState = 'LOADING';
+        let highscores = JSON.parse(localStorage.getItem('flappyHighscores')) || [];
+        let lastTime = 0;
+        let spawnTimer = 0;
+
+        function updateBestLabel() {
+            const topScore = highscores.length > 0 ? highscores[0] : 0;
+            bestLabel.innerText = `BEST: ${topScore}`;
+        }
+
+        function init() {
+            canvas.width = 360;
+            canvas.height = 640;
+            
+            bird = {
+                y: canvas.height / 2,
+                velocity: 0,
+                width: 34,
+                height: 24,
+                rotation: 0
+            };
+
+            pipes = [];
+            clouds = [
+                { x: 50, y: 100, scale: 1 },
+                { x: 200, y: 180, scale: 0.8 },
+                { x: 320, y: 80, scale: 1.2 }
+            ];
+            
+            score = 0;
+            spawnTimer = 0;
+            
+            if (gameState !== 'LOADING') {
+                gameState = 'START';
+                messageLabel.innerText = 'PRESS SPACE OR TAP TO START';
+            }
+            
+            scoreLabel.innerText = '0';
+            updateBestLabel();
+            
+            messageLabel.style.display = 'block';
+            highscoreTable.style.display = 'none';
+        }
+
+        function drawBird() {
+            ctx.save();
+            ctx.translate(BIRD_X + bird.width / 2, bird.y + bird.height / 2);
+            ctx.rotate(bird.rotation);
+            
+            ctx.fillStyle = '#f8e71c';
+            ctx.fillRect(-bird.width/2, -bird.height/2, bird.width, bird.height);
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(-bird.width/2, -bird.height/2, bird.width, bird.height);
+            
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(8, -8, 10, 10);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(14, -6, 4, 4);
+            
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(-12, 0, 14, 10);
+            ctx.strokeRect(-12, 0, 14, 10);
+            
+            ctx.fillStyle = '#f5a623';
+            ctx.fillRect(10, 4, 14, 10);
+            ctx.strokeRect(10, 4, 14, 10);
+            
+            ctx.restore();
+        }
+
+        function drawPipe(p) {
+            ctx.fillStyle = '#2ecc71';
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 3;
+
+            ctx.fillRect(p.x, 0, 60, p.top);
+            ctx.strokeRect(p.x, 0, 60, p.top);
+            ctx.fillRect(p.x - 5, p.top - 20, 70, 20);
+            ctx.strokeRect(p.x - 5, p.top - 20, 70, 20);
+
+            const bottomY = p.top + PIPE_GAP;
+            ctx.fillRect(p.x, bottomY, 60, canvas.height - bottomY);
+            ctx.strokeRect(p.x, bottomY, 60, canvas.height - bottomY);
+            ctx.fillRect(p.x - 5, bottomY, 70, 20);
+            ctx.strokeRect(p.x - 5, bottomY, 70, 20);
+        }
+
+        function drawCloud(c) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+            const w = 60 * c.scale;
+            const h = 30 * c.scale;
+            ctx.fillRect(c.x, c.y, w, h);
+            ctx.fillRect(c.x + 10, c.y - 10, w - 20, 10);
+        }
+
+        function update(dt) {
+            if (gameState === 'PLAYING') {
+                bird.velocity += GRAVITY * dt;
+                bird.y += bird.velocity * dt;
+                
+                // Hiệu ứng xoay nhanh hơn phù hợp với trọng lực lớn
+                bird.rotation = Math.min(Math.PI / 2, Math.max(-Math.PI / 4, bird.velocity * 0.0035));
+
+                clouds.forEach(c => {
+                    c.x -= 80 * dt; 
+                    if (c.x < -100) c.x = canvas.width + 50;
+                });
+                
+                spawnTimer += dt;
+                if (spawnTimer >= PIPE_SPAWN_INTERVAL) {
+                    const top = Math.random() * (canvas.height - PIPE_GAP - 200) + 100;
+                    pipes.push({ x: canvas.width, top: top, passed: false });
+                    spawnTimer = 0;
+                }
+
+                pipes.forEach((p) => {
+                    p.x -= PIPE_SPEED * dt;
+
+                    if (BIRD_X + bird.width > p.x && BIRD_X < p.x + 60) {
+                        if (bird.y < p.top || bird.y + bird.height > p.top + PIPE_GAP) {
+                            gameOver();
+                        }
+                    }
+
+                    if (!p.passed && p.x + 60 < BIRD_X) {
+                        p.passed = true;
+                        score++;
+                        scoreLabel.innerText = score;
+                    }
+                });
+
+                if (pipes.length > 0 && pipes[0].x < -100) pipes.shift();
+
+                if (bird.y + bird.height > canvas.height || bird.y < 0) {
+                    gameOver();
+                }
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            clouds.forEach(drawCloud);
+            pipes.forEach(drawPipe);
+            drawBird();
+            ctx.fillStyle = '#ded895';
+            ctx.fillRect(0, canvas.height - 20, canvas.width, 20);
+        }
+
+        function flap() {
+            if (gameState === 'LOADING') return;
+            if (gameState === 'START') {
+                gameState = 'PLAYING';
+                messageLabel.style.display = 'none';
+            }
+            if (gameState === 'PLAYING') {
+                bird.velocity = FLAP_SPEED;
+            } else if (gameState === 'GAMEOVER') {
+                init();
+            }
+        }
+
+        function gameOver() {
+            gameState = 'GAMEOVER';
+            highscores.push(score);
+            highscores.sort((a, b) => b - a);
+            highscores = highscores.slice(0, 5); 
+            localStorage.setItem('flappyHighscores', JSON.stringify(highscores));
+
+            if (sdkReady && sdk && typeof sdk.setScore === 'function') {
+                sdk.setScore({ score: score }).catch(err => console.warn(err));
+            }
+
+            messageLabel.style.display = 'block';
+            messageLabel.innerText = 'GAME OVER\nCLICK TO RESTART';
+            displayHighscores();
+            highscoreTable.style.display = 'block';
+        }
+
+        function displayHighscores() {
+            highscoreList.innerHTML = '';
+            highscores.forEach((s, i) => {
+                const div = document.createElement('div');
+                div.innerText = `#${i+1} - Score: ${s}`;
+                highscoreList.appendChild(div);
+            });
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'KeyW') {
+                flap();
+                e.preventDefault();
+            }
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            flap();
+            e.preventDefault();
+        });
+
+        canvas.addEventListener('touchstart', (e) => {
+            flap();
+            e.preventDefault();
+        });
+
+        function gameLoop(timestamp) {
+            const dt = Math.min((timestamp - lastTime) / 1000, 0.0125); 
+            lastTime = timestamp;
+
+            update(dt);
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        init();
+        requestAnimationFrame((timestamp) => {
+            lastTime = timestamp;
+            gameLoop(timestamp);
+        });
+    </script>
+</body>
+</html>
